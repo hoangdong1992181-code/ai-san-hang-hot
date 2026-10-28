@@ -1,0 +1,34 @@
+name: AI Auto Affiliate Bot
+
+on:
+  schedule:
+    # Chạy lúc 08:00, 13:00, 20:00 giờ Việt Nam
+    - cron: '0 1,6,13 * * *'
+  workflow_dispatch:
+
+jobs:
+  hunt_and_post:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install google-genai
+
+      - name: AI săn hàng và viết bài
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python bot_auto_post.py
+
+      - name: Cập nhật bài mới lên Web
+        run: |
+          git config --global user.name "AI San Sale Bot"
+          git config --global user.email "bot@ai-san-sale.local"
+          git add data/posts.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 AI tự động cập nhật món Hot Trend mới" && git push)
