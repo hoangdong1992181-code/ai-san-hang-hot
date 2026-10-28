@@ -1,11 +1,11 @@
 import os
 import json
+import time
 import urllib.parse
 from datetime import datetime
 from google import genai
 from google.genai import types
 
-# Khởi tạo Gemini AI đúng chuẩn định danh hệ thống Google yêu cầu
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 def generate_hot_trend_post():
@@ -44,15 +44,25 @@ def generate_hot_trend_post():
     }}
     """
     
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",  # Đã cập nhật đúng chuẩn model ID mà Google bắt buộc trong log lỗi
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.8
-        )
-    )
-    
+    # Cơ chế tự động thử lại nếu server Google quá tải (503)
+    response = None
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.8-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.8
+                )
+            )
+            break
+        except Exception as e:
+            print(f"⚠️ Lần thử {attempt+1} bị quá tải, đang đợi 5 giây để thử lại...")
+            time.sleep(5)
+            if attempt == 2:
+                raise e
+
     ai_data = json.loads(response.text.strip())
     
     encoded_kw = urllib.parse.quote_plus(ai_data["search_keyword"])
