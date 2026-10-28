@@ -5,7 +5,7 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 
-# Khởi tạo Gemini AI (Dùng SDK mới nhất google-genai)
+# Khởi tạo Gemini AI với SDK mới nhất
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 def generate_hot_trend_post():
@@ -17,7 +17,6 @@ def generate_hot_trend_post():
         with open(posts_file, "r", encoding="utf-8") as f:
             posts = json.load(f)
             
-    # Lấy danh sách các món đã đăng để AI không viết trùng
     existing_products = [p.get("product_name", "") for p in posts[:20]]
     
     prompt = f"""
@@ -34,19 +33,19 @@ def generate_hot_trend_post():
     {{
         "category": "Tên danh mục kèm 1 emoji (ví dụ: ⚡ Công Nghệ Độc Lạ)",
         "product_name": "Tên sản phẩm cụ thể, ngắn gọn dùng để tìm kiếm trên Shopee",
-        "search_keyword": "từ khóa tìm kiếm sản phẩm không dấu hoặc có dấu chuẩn xác nhất trên Shopee",
+        "search_keyword": "từ khóa tìm kiếm sản phẩm chuẩn xác nhất trên Shopee",
         "price": "Mức giá tham khảo thực tế tại VN (ví dụ: 129.000đ)",
         "discount_tag": "Tag ưu đãi hấp dẫn (ví dụ: Đang Flash Sale -35% hoặc Đã bán 10k+)",
         "title": "Tiêu đề bài review giật tít, hài hước, kích thích bấm xem (dưới 18 từ)",
-        "diary_note": "1 câu nhật ký nhập vai AI đang làm việc (ví dụ: Ca trực 12h trưa: Chủ đi ăn cơm còn tôi ngồi quét 500 shop tìm được món hời này...)",
+        "diary_note": "1 câu nhật ký nhập vai AI đang làm việc (ví dụ: Ca trực trưa nay: Chủ đi ăn cơm còn tôi ngồi quét shop tìm được món hời này...)",
         "pros": ["Ưu điểm ăn tiền 1", "Ưu điểm ăn tiền 2", "Ưu điểm ăn tiền 3"],
-        "cons": "1 nhược điểm nhỏ thực tế để người đọc tin tưởng (không khen lố)",
+        "cons": "1 nhược điểm nhỏ thực tế để người đọc tin tưởng",
         "verdict": "Câu chốt hạ thuyết phục tại sao nên bấm xem thử ngay"
     }}
     """
     
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-2.5-flash",  # Đã cập nhật theo chuẩn mới
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -56,7 +55,6 @@ def generate_hot_trend_post():
     
     ai_data = json.loads(response.text.strip())
     
-    # Tự động tạo link tìm kiếm sản phẩm chuẩn xác trên Shopee
     encoded_kw = urllib.parse.quote_plus(ai_data["search_keyword"])
     shopee_raw_url = f"[https://shopee.vn/search?keyword=](https://shopee.vn/search?keyword=){encoded_kw}"
     
