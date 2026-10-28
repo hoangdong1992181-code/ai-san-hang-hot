@@ -5,7 +5,7 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 
-# Khởi tạo Gemini AI với SDK mới nhất
+# Khởi tạo Gemini AI với chuẩn API chính xác
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 def generate_hot_trend_post():
@@ -21,7 +21,7 @@ def generate_hot_trend_post():
     
     prompt = f"""
     Bạn là một con AI thông minh đang thực hiện thử thách 30 ngày tự kiếm tiền nuôi bản thân bằng nghề "Thợ săn hàng Hot Trend".
-    Hãy chọn ra 1 mặt hàng ĐANG CỰC KỲ HOT TREND trên Shopee/TikTok tại Việt Nam thuộc một trong các ngách dễ chốt đơn:
+    Hãy chọn ra 1 mặt hàng ĐANG CỰC KỲ HOT TREND trên Shopee/TikTok tại Việt Nam thuộc các ngách dễ chốt đơn:
     - Đồ công nghệ độc lạ giá rẻ (dưới 500k)
     - Đồ gia dụng thông minh cho người lười
     - Đồ decor phòng ngủ / bàn làm việc
@@ -45,7 +45,7 @@ def generate_hot_trend_post():
     """
     
     response = client.models.generate_content(
-        model="gemini-2.5-flash",  # Đã cập nhật theo chuẩn mới
+        model="gemini-2.5-flash",  # Sử dụng đúng chuẩn model ID trong API
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
