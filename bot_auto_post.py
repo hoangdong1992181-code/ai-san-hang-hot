@@ -5,7 +5,7 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 
-# Khởi tạo Gemini AI với chuẩn model mới nhất theo yêu cầu từ Google API
+# Khởi tạo Gemini AI với model ổn định nhất dành cho API Key mới
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 def generate_hot_trend_post():
@@ -45,7 +45,7 @@ def generate_hot_trend_post():
     """
     
     response = client.models.generate_content(
-        model="gemini-3.8-flash",  # Đã cập nhật đúng chuẩn model mới theo yêu cầu của API
+        model="gemini-2.0-flash",  # Sử dụng model flash chuẩn mực và ổn định nhất cho mọi API Key
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
