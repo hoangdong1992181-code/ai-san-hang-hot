@@ -1,0 +1,55 @@
+name: 🍿 Xưởng AI Xào Nấu Phim Ngắn Câu View
+
+on:
+  workflow_dispatch:
+    inputs:
+      movie_title:
+        description: 'Tên Phim (Đặt tên giật tít)'
+        required: true
+        default: 'Tổng Tài Giả Danh Anh Giao Hàng'
+      part_number:
+        description: 'Tập / Phần mấy?'
+        required: true
+        default: 'Phần 1'
+      plot_summary:
+        description: 'Tóm tắt 1-2 câu tình tiết trong video'
+        required: true
+        default: 'Chàng trai mặc đồ shipper bị nhà vợ tương lai coi thường hủy hôn, ngay lập tức dàn siêu xe 20 chiếc kéo đến đón anh về tập đoàn'
+      video_url:
+        description: 'Link video gốc (TikTok / YouTube Shorts / MP4)'
+        required: true
+        default: 'https://files.catbox.moe/3ce2y5.mp4'
+
+jobs:
+  remix_movie:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cài đặt FFmpeg & Thư viện âm thanh AI
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install -U edge-tts yt-dlp
+
+      - name: 🤖 AI Viết Thuyết Minh & Xào Nấu Phim
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MOVIE_TITLE: ${{ github.event.inputs.movie_title }}
+          PART_NUMBER: ${{ github.event.inputs.part_number }}
+          PLOT_SUMMARY: ${{ github.event.inputs.plot_summary }}
+          VIDEO_URL: ${{ github.event.inputs.video_url }}
+        run: python movie_bot.py
+
+      - name: 📦 Đóng gói Video Phim Hoàn Chỉnh
+        uses: actions/upload-artifact@v4
+        with:
+          name: Phim-Ngan-TikTok-Hoan-Chinh
+          path: |
+            phim_ngan_tiktok.mp4
+            caption_dang_bai.txt
+            movie_sub.srt
