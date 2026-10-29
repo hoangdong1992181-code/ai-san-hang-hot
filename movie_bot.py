@@ -47,7 +47,7 @@ def download_movie_and_extract_info(video_url, output_raw="raw_movie.mp4"):
         video_url
     ]
     try:
-        subprocess.run(cmd, check=False, timeout=90)
+        subprocess.run(cmd, check=False, timeout=120)
     except Exception as e:
         print(f"⚠️ Cảnh báo yt-dlp: {e}")
 
@@ -55,12 +55,12 @@ def download_movie_and_extract_info(video_url, output_raw="raw_movie.mp4"):
         fallback_url = "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/person-bicycle-car-detection.mp4"
         try:
             req = urllib.request.Request(fallback_url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=25) as response, open(output_raw, "wb") as out_file:
+            with urllib.request.urlopen(req, timeout=30) as response, open(output_raw, "wb") as out_file:
                 out_file.write(response.read())
         except Exception:
             subprocess.run([
                 "ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=1080x1920:rate=30",
-                "-t", "30", "-c:v", "libx264", "-pix_fmt", "yuv420p", output_raw
+                "-t", "45", "-c:v", "libx264", "-pix_fmt", "yuv420p", output_raw
             ], check=True)
 
     extracted_text = ""
@@ -79,7 +79,7 @@ def extract_video_frames(video_path="raw_movie.mp4", num_frames=4):
     try:
         subprocess.run([
             "ffmpeg", "-y", "-i", video_path,
-            "-vf", "fps=1/5,scale=360:-1", "-frames:v", str(num_frames),
+            "-vf", "fps=1/8,scale=360:-1", "-frames:v", str(num_frames),
             "frame_%d.jpg"
         ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -132,7 +132,7 @@ def generate_auto_movie_script(movie_title, plot_summary, part_number, duration_
     try:
         payload = json.dumps({"contents": [{"parts": parts}]}).encode("utf-8")
         req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=25) as res:
+        with urllib.request.urlopen(req, timeout=30) as res:
             data = json.loads(res.read().decode("utf-8"))
             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception:
@@ -155,11 +155,9 @@ def remix_movie_anti_copyright(movie_title, part_number, raw_video="raw_movie.mp
     
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     
-    # Làm sạch chuỗi tiêu đề để tránh mọi lỗi ký tự đặc biệt trong FFmpeg
     clean_title = movie_title.replace(":", " - ").replace("'", "").upper()
     clean_part = part_number.replace(":", " - ").replace("'", "").upper()
 
-    # Kiểm tra an toàn file phụ đề
     sub_filter = ""
     if os.path.exists(sub_file) and os.path.getsize(sub_file) > 10:
         sub_filter = f",subtitles={sub_file}:force_style='FontName=DejaVu Sans,FontSize=16,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=65'"
@@ -174,6 +172,8 @@ def remix_movie_anti_copyright(movie_title, part_number, raw_video="raw_movie.mp
         f"{sub_filter},"
         "fps=30,format=yuv420p[v]"
     )
+    
+    # Đã gỡ bỏ cờ -shortest để giữ nguyên trọn vẹn thời lượng video gốc
     cmd = [
         "ffmpeg", "-y",
         "-stream_loop", "-1", "-i", raw_video,
@@ -183,7 +183,6 @@ def remix_movie_anti_copyright(movie_title, part_number, raw_video="raw_movie.mp
         "-map", "1:a",
         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
         "-c:a", "aac", "-b:a", "192k",
-        "-shortest",
         final_video
     ]
     subprocess.run(cmd, check=True)
