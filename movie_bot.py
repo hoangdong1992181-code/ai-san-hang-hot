@@ -1,12 +1,14 @@
 import os
+import re
 import json
+import base64
 import asyncio
 import subprocess
 import urllib.request
 import edge_tts
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-VOICE = "vi-VN-NamMinhNeural"  # Giọng Nam Minh đọc review phim kịch tính
+VOICE = "vi-VN-NamMinhNeural"
 
 def get_best_model():
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
@@ -19,40 +21,149 @@ def get_best_model():
                 name = m.get("name", "").replace("models/", "")
                 if "generateContent" in m.get("supportedGenerationMethods", []) and "gemini" in name:
                     models.append(name)
-            models.sort(key=lambda x: (0 if "lite" in x else (1 if "flash" in x else 2)))
+            models.sort(key=lambda x: (0 if "flash" in x and "lite" not in x else (1 if "lite" in x else 2)))
             if models:
                 return models[0]
     except Exception:
         pass
     return "gemini-3.8-flash"
 
-def generate_movie_recap_script(movie_title, plot_summary, part_number):
+def download_movie_and_extract_info(video_url, output_raw="raw_movie.mp4"):
+    """Tải video gốc ĐỒNG THỜI tự hút tiêu đề gốc + phụ đề gốc (nếu có) để AI dịch"""
+    print(f"📥 Đang tải video và trích xuất dữ liệu gốc từ: {video_url}")
+    if "catbox.moe" in video_url or not video_url.startswith("http"):
+        video_url = "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/person-bicycle-car-detection.mp4"
+
+    # 1. Lấy thông tin tiêu đề/mô tả gốc và phụ đề tự động bằng yt-dlp
+    cmd = [
+        "yt-dlp",
+        "--no-check-certificates",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "--write-info-json",
+        "--write-auto-sub", "--write-sub",
+        "--sub-langs", "vi,en,zh-Hans,zh-Hant,zh.*",
+        "--convert-subs", "srt",
+        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "--merge-output-format", "mp4",
+        "-o", "raw_movie.%(ext)s",
+        video_url
+    ]
+    try:
+        subprocess.run(cmd, check=False, timeout=90)
+    except Exception as e:
+        print(f"⚠️ Cảnh báo khi tải bằng yt-dlp: {e}")
+
+    # Nếu chưa có file raw_movie.mp4 thì tải trực tiếp
+    if not os.path.exists(output_raw) or os.path.getsize(output_raw) < 10000:
+        fallback_url = "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/person-bicycle-car-detection.mp4"
+        try:
+            req = urllib.request.Request(fallback_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=25) as response, open(output_raw, "wb") as out_file:
+                out_file.write(response.read())
+        except Exception:
+            subprocess.run([
+                "ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=1080x1920:rate=30",
+                "-t", "30", "-c:v", "libx264", "-pix_fmt", "yuv420p", output_raw
+            ], check=True)
+
+    # 2. Đọc tiêu đề gốc và phụ đề gốc (nếu lấy được)
+    extracted_text = ""
+    if os.path.exists("raw_movie.info.json"):
+        try:
+            with open("raw_movie.info.json", "r", encoding="utf-8") as f:
+                info = json.load(f)
+                title = info.get("title", "")
+                desc = info.get("description", "")[:500]
+                extracted_text += f"Tiêu đề gốc của video: {title}\nMô tả gốc: {desc}\n"
+        except Exception:
+            pass
+
+    for fname in os.listdir("."):
+        if fname.startswith("raw_movie") and fname.endswith(".srt"):
+            try:
+                with open(fname, "r", encoding="utf-8", errors="ignore") as f:
+                    raw_srt = f.read()
+                    clean_lines = [line.strip() for line in raw_srt.splitlines() if not re.match(r"^\d+$|^\d{2}:\d{2}", line.strip()) and line.strip()]
+                    sub_content = " ".join(dict.fromkeys(clean_lines))[:2500]
+                    extracted_text += f"\nLời thoại/Phụ đề gốc trong video: {sub_content}\n"
+                break
+            except Exception:
+                pass
+
+    return extracted_text
+
+def extract_video_frames(video_path="raw_movie.mp4", num_frames=4):
+    """Cắt 4 khung hình đại diện trong video để con AI nhìn thấy cảnh phim bằng mắt"""
+    frames_b64 = []
+    try:
+        # Cắt mỗi 5 giây 1 tấm ảnh nhỏ gọn gửi cho Gemini Vision
+        subprocess.run([
+            "ffmpeg", "-y", "-i", video_path,
+            "-vf", "fps=1/5,scale=360:-1", "-frames:v", str(num_frames),
+            "frame_%d.jpg"
+        ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        for i in range(1, num_frames + 1):
+            fname = f"frame_{i}.jpg"
+            if os.path.exists(fname):
+                with open(fname, "rb") as img_f:
+                    b64_data = base64.b64encode(img_f.read()).decode("utf-8")
+                    frames_b64.append({
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": b64_data
+                        }
+                    })
+    except Exception as e:
+        print(f"⚠️ Không trích xuất được ảnh khung hình: {e}")
+    return frames_b64
+
+def generate_auto_movie_script(movie_title, plot_summary, part_number, duration_mode, auto_extracted_info, frames_b64):
+    """Bước 2: AI kết hợp nhìn ảnh khung hình + dịch phụ đề gốc + gợi ý của bạn để tự viết kịch bản"""
+    if duration_mode == "long":
+        word_limit = "320 đến 420 chữ (để đọc trong khoảng 80 đến 110 giây)"
+    else:
+        word_limit = "100 đến 130 chữ (để đọc trong khoảng 30 đến 35 giây)"
+
+    user_hint = plot_summary.strip()
+    if not user_hint or "Tự động" in user_hint or "mặc đồ shipper" in user_hint:
+        user_hint_text = "Người dùng không nhập tóm tắt. Hãy TỰ QUAN SÁT các hình ảnh cắt từ video và DỊCH phần thông tin/lời thoại gốc bên dưới để hiểu nội dung phim và tự biên kịch!"
+    else:
+        user_hint_text = f"Gợi ý thêm từ người dùng: {user_hint}"
+
     prompt = f"""
-    Bạn là một biên kịch chuyên làm video "Tóm tắt phim / Review phim ngắn" triệu view trên TikTok.
-    Hãy viết kịch bản thuyết minh (khoảng 80 - 110 chữ, đọc trong 25-35 giây) cho bộ phim:
-    - Tên phim: {movie_title} ({part_number})
-    - Tóm tắt tình tiết trong đoạn video này: {plot_summary}
+    Bạn là biên kịch chuyên làm video "Tóm tắt phim / Review phim ngắn" triệu view trên TikTok.
+    Hãy tự quan sát các khung hình cắt từ video, kết hợp dịch thông tin gốc dưới đây để viết bài thuyết minh tiếng Việt có độ dài {word_limit}:
+    - Tên phim hiển thị: {movie_title} ({part_number})
+    - Dữ liệu tự hút từ video gốc (Tiêu đề/Phụ đề tiếng nước ngoài nếu có):
+      {auto_extracted_info if auto_extracted_info else "Không có phụ đề text, hãy nhìn trực tiếp vào các bức ảnh khung hình của video để mô tả tình huống kịch tính."}
+    - {user_hint_text}
 
     Quy tắc bắt buộc:
-    1. Câu mở đầu (3 giây đầu) phải cực kỳ sốc, kịch tính để giữ chân người xem.
-    2. Kể lại diễn biến với nhịp độ nhanh, dùng từ ngữ gay cấn, lôi cuốn.
-    3. Kết thúc lửng lơ ở đoạn cao trào nhất và chốt câu: "Cái kết cho kẻ coi thường người khác sẽ ra sao? Bấm Follow kênh ngay vì Phần tiếp theo đã có trong trang cá nhân rồi nhé!"
-    4. CHỈ TRẢ VỀ đúng đoạn văn bản để đọc thành tiếng, tuyệt đối không có ghi chú cảnh quay, không có dấu ngoặc hay emoji.
+    1. Câu mở đầu (3 giây đầu) phải cực kỳ sốc, đánh thẳng vào cảnh quay hoặc mâu thuẫn đang diễn ra trong video để giữ chân người xem.
+    2. Dịch và kể lại diễn biến bám sát bối cảnh nhân vật trong hình ảnh/phụ đề với giọng văn Review Phim gay cấn, lôi cuốn.
+    3. Kết thúc bỏ lửng ở khoảnh khắc cao trào và chốt câu: "Diễn biến tiếp theo sẽ kịch tính ra sao? Bấm Follow kênh ngay vì phần tiếp theo đã có trong trang cá nhân rồi nhé!"
+    4. CHỈ TRẢ VỀ đúng đoạn văn bản liền mạch để đọc thành tiếng, không ghi chú cảnh quay, không có dấu ngoặc hay emoji.
     """
+
+    parts = [{"text": prompt}]
+    parts.extend(frames_b64)  # Đính kèm hình ảnh cắt từ video cho AI nhìn
+
     model_name = get_best_model()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={API_KEY}"
     try:
-        payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
+        payload = json.dumps({"contents": [{"parts": parts}]}).encode("utf-8")
         req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=15) as res:
+        with urllib.request.urlopen(req, timeout=25) as res:
             data = json.loads(res.read().decode("utf-8"))
             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
-        print(f"⚠️ Dùng kịch bản dự phòng do server AI bận: {e}")
+        print(f"⚠️ Chuyển sang kịch bản dự phòng do server AI bận: {e}")
         return (
-            f"Không ai ngờ người đàn ông ăn mặc giản dị trước mặt lại đang nắm giữ vận mệnh của cả tập đoàn trong {movie_title}. "
-            f"{plot_summary}. Ngay khi tất cả mọi người đều nghĩ anh sẽ phải cúi đầu chịu nhục, một chiếc siêu xe bất ngờ phanh gấp trước cửa làm cả khán phòng chết lặng. "
-            f"Màn trả thù chấn động tiếp theo sẽ diễn ra thế nào? Bấm Follow kênh ngay để xem tiếp {part_number} cực gắt nhé!"
+            f"Không một ai ngờ rằng câu chuyện trong {movie_title} lại có cú lật kèo nghẹt thở đến như vậy. "
+            f"Ngay từ những giây đầu tiên, bầu không khí căng thẳng đã bao trùm lấy toàn bộ khung cảnh khi nhân vật chính rơi vào tình thế bị dồn ép đến chân tường. "
+            f"Trước ánh mắt ngỡ ngàng của tất cả những người có mặt tại đó, một bí mật động trời đã bất ngờ được hé lộ khiến cục diện xoay chuyển hoàn toàn trong chớp mắt. "
+            f"Những kẻ từng coi thường người khác giờ đây chỉ biết đứng chết lặng không thốt nên lời. Cái kết tiếp theo sẽ đi về đâu? Bấm Follow kênh ngay để xem tiếp {part_number} trong trang cá nhân nhé!"
         )
 
 async def create_voiceover(text, output_audio="movie_voice.mp3", output_sub="movie_sub.srt"):
@@ -66,63 +177,25 @@ async def create_voiceover(text, output_audio="movie_voice.mp3", output_sub="mov
                 submaker.feed(chunk)
     with open(output_sub, "w", encoding="utf-8") as file:
         file.write(submaker.get_srt())
-    print("✅ Đã thu âm xong giọng thuyết minh Review Phim!")
+    print("✅ Đã thu âm xong giọng thuyết minh & tạo file phụ đề chuẩn từng giây!")
 
-def download_movie_clip(video_url, output_raw="raw_movie.mp4"):
-    print(f"📥 Đang tải đoạn phim gốc từ: {video_url}")
-    
-    # Nếu vẫn đang để link catbox mặc định cũ thì đổi sang link sample chuẩn không chặn GitHub
-    if "catbox.moe" in video_url or not video_url.startswith("http"):
-        video_url = "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/person-bicycle-car-detection.mp4"
+def remix_movie_anti_copyright(movie_title, part_number, raw_video="raw_movie.mp4", audio_file="movie_voice.mp3", sub_file="movie_sub.srt", final_video="phim_ngan_tiktok.mp4"):
+    print("🎬 Đang xử lý lách bản quyền, đóng khung tiêu đề & đốt phụ đề tiếng Việt...")
+    with open("banner_title.txt", "w", encoding="utf-8") as f:
+        f.write(f"{movie_title.upper()}")
+    with open("banner_part.txt", "w", encoding="utf-8") as f:
+        f.write(f"【 {part_number.upper()} 】")
 
-    # Tầng 1: Tải bằng yt-dlp có giả lập trình duyệt thật
-    cmd = [
-        "yt-dlp",
-        "--no-check-certificates",
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "--merge-output-format", "mp4",
-        "-o", output_raw,
-        video_url
-    ]
-    try:
-        subprocess.run(cmd, check=True, timeout=60)
-        if os.path.exists(output_raw) and os.path.getsize(output_raw) > 10000:
-            print("✅ Đã tải xong file video gốc bằng yt-dlp!")
-            return
-    except Exception as e:
-        print(f"⚠️ yt-dlp không tải được link này ({e}), chuyển sang Tầng 2...")
-
-    # Tầng 2: Tải video mẫu trực tiếp từ kho GitHub (không bao giờ chặn IP GitHub Actions)
-    fallback_url = "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/person-bicycle-car-detection.mp4"
-    try:
-        req = urllib.request.Request(fallback_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=20) as response, open(output_raw, "wb") as out_file:
-            out_file.write(response.read())
-        if os.path.exists(output_raw) and os.path.getsize(output_raw) > 10000:
-            print("✅ Đã tải xong video mẫu dự phòng từ GitHub!")
-            return
-    except Exception as e:
-        print(f"⚠️ Tầng 2 lỗi ({e}), kích hoạt Tầng 3 tự tạo video nền bằng FFmpeg...")
-
-    # Tầng 3 (Bất tử): Dùng FFmpeg tự sinh video nền chuyển động tại chỗ
-    gen_cmd = [
-        "ffmpeg", "-y",
-        "-f", "lavfi", "-i", "testsrc2=size=1080x1920:rate=30",
-        "-t", "15",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        output_raw
-    ]
-    subprocess.run(gen_cmd, check=True)
-    print("✅ Đã tự khởi tạo video nền dự phòng thành công!")
-
-def remix_movie_anti_copyright(raw_video="raw_movie.mp4", audio_file="movie_voice.mp3", final_video="phim_ngan_tiktok.mp4"):
-    print("🎬 Đang xử lý lách bản quyền 5 lớp & ghép thuyết minh...")
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     filter_complex = (
-        "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg];"
-        "[0:v]setpts=0.95*PTS,hflip,eq=contrast=1.08:saturation=1.12:brightness=0.02,"
-        "scale=1080:1350:force_original_aspect_ratio=decrease[fg];"
-        "[bg][fg]overlay=(W-w)/2:(H-h)/2,fps=30,format=yuv420p[v]"
+        "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5,eq=brightness=-0.15[bg];"
+        "[0:v]setpts=0.95*PTS,hflip,eq=contrast=1.08:saturation=1.15:brightness=0.02,"
+        "scale=1080:1280:force_original_aspect_ratio=decrease[fg];"
+        "[bg][fg]overlay=(W-w)/2:(H-h)/2[merged];"
+        f"[merged]drawtext=fontfile={font_path}:textfile=banner_title.txt:fontcolor=#f59e0b:fontsize=46:borderw=4:bordercolor=black:x=(w-text_w)/2:y=140,"
+        f"drawtext=fontfile={font_path}:textfile=banner_part.txt:fontcolor=#ffffff:fontsize=38:borderw=3:bordercolor=black:x=(w-text_w)/2:y=210,"
+        f"subtitles={sub_file}:force_style='FontName=DejaVu Sans,FontSize=16,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=65',"
+        "fps=30,format=yuv420p[v]"
     )
     cmd = [
         "ffmpeg", "-y",
@@ -137,28 +210,28 @@ def remix_movie_anti_copyright(raw_video="raw_movie.mp4", audio_file="movie_voic
         final_video
     ]
     subprocess.run(cmd, check=True)
-    print(f"🎉 Xuất xưởng thành công: {final_video}")
+    print(f"🎉 Xuất xưởng thành công video dài kèm phụ đề: {final_video}")
 
 async def main():
-    movie_title = os.environ.get("MOVIE_TITLE", "Chủ Tịch Giả Làm Bảo Vệ")
+    movie_title = os.environ.get("MOVIE_TITLE", "Siêu Phẩm Phim Ngắn")
     part_number = os.environ.get("PART_NUMBER", "Phần 1")
-    plot_summary = os.environ.get("PLOT_SUMMARY", "Anh chàng mặc đồ bảo vệ đi họp lớp bị bạn cũ sỉ nhục, nào ngờ giám đốc khách sạn chạy ra cúi đầu chào")
+    duration_mode = os.environ.get("DURATION_MODE", "long")
+    plot_summary = os.environ.get("PLOT_SUMMARY", "Tự động xem video và dịch")
     video_url = os.environ.get("VIDEO_URL", "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/person-bicycle-car-detection.mp4")
 
-    script = generate_movie_recap_script(movie_title, plot_summary, part_number)
-    print(f"📝 Lời bình AI vừa viết:\n{script}\n")
+    # Bước 1: Tải video TRƯỚC và tự hút phụ đề + cắt ảnh khung hình
+    auto_info = download_movie_and_extract_info(video_url)
+    frames_b64 = extract_video_frames("raw_movie.mp4", num_frames=4)
+    print(f"👁️ Đã trích xuất {len(frames_b64)} khung hình & thông tin gốc gửi cho AI phân tích!")
 
+    # Bước 2: AI nhìn ảnh + đọc phụ đề gốc để tự dịch và viết lời bình
+    script = generate_auto_movie_script(movie_title, plot_summary, part_number, duration_mode, auto_info, frames_b64)
+    print(f"📝 Kịch bản AI tự xem phim & dịch:\n{script}\n")
+
+    # Bước 3: Lồng tiếng & Xuất video
     await create_voiceover(script)
-    download_movie_clip(video_url)
-    remix_movie_anti_copyright()
+    remix_movie_anti_copyright(movie_title, part_number)
 
     with open("caption_dang_bai.txt", "w", encoding="utf-8") as f:
         f.write(
-            f"🎬 {movie_title} - {part_number} | Xem cuốn không rời mắt! 🔥\n"
-            f"👉 Bấm Follow kênh để xem ngay phần tiếp theo nhé!\n"
-            f"#reviewphim #phimngan #tomtatphim #phimhay #xuhuong\n\n"
-            f"--- Lời thuyết minh ---\n{script}"
-        )
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            f"🎬 {movie_title} - {part_number} | Xem cuốn không
