@@ -11,7 +11,8 @@ VOICE = "vi-VN-NamMinhNeural"  # Giọng Nam Minh đọc review phim kịch tín
 def get_best_model():
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
     try:
-        with urllib.request.urlopen(url, timeout=10) as res:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as res:
             data = json.loads(res.read().decode("utf-8"))
             models = []
             for m in data.get("models", []):
@@ -47,7 +48,7 @@ def generate_movie_recap_script(movie_title, plot_summary, part_number):
             data = json.loads(res.read().decode("utf-8"))
             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
-        print(f"⚠️ Dùng kịch bản dự phòng do server bận: {e}")
+        print(f"⚠️ Dùng kịch bản dự phòng do server AI bận: {e}")
         return (
             f"Không ai ngờ người đàn ông ăn mặc giản dị trước mặt lại đang nắm giữ vận mệnh của cả tập đoàn trong {movie_title}. "
             f"{plot_summary}. Ngay khi tất cả mọi người đều nghĩ anh sẽ phải cúi đầu chịu nhục, một chiếc siêu xe bất ngờ phanh gấp trước cửa làm cả khán phòng chết lặng. "
@@ -69,20 +70,51 @@ async def create_voiceover(text, output_audio="movie_voice.mp3", output_sub="mov
 
 def download_movie_clip(video_url, output_raw="raw_movie.mp4"):
     print(f"📥 Đang tải đoạn phim gốc từ: {video_url}")
+    
+    # Nếu vẫn đang để link catbox mặc định cũ thì đổi sang link sample chuẩn không chặn GitHub
+    if "catbox.moe" in video_url or not video_url.startswith("http"):
+        video_url = "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/person-bicycle-car-detection.mp4"
+
+    # Tầng 1: Tải bằng yt-dlp có giả lập trình duyệt thật
     cmd = [
         "yt-dlp",
         "--no-check-certificates",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "--merge-output-format", "mp4",
         "-o", output_raw,
         video_url
     ]
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, timeout=60)
+        if os.path.exists(output_raw) and os.path.getsize(output_raw) > 10000:
+            print("✅ Đã tải xong file video gốc bằng yt-dlp!")
+            return
     except Exception as e:
-        print(f"⚠️ Link video bị chặn tải trực tiếp ({e}), chuyển sang video mẫu dự phòng...")
-        urllib.request.urlretrieve("https://files.catbox.moe/3ce2y5.mp4", output_raw)
-    print("✅ Đã có file video gốc!")
+        print(f"⚠️ yt-dlp không tải được link này ({e}), chuyển sang Tầng 2...")
+
+    # Tầng 2: Tải video mẫu trực tiếp từ kho GitHub (không bao giờ chặn IP GitHub Actions)
+    fallback_url = "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/person-bicycle-car-detection.mp4"
+    try:
+        req = urllib.request.Request(fallback_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=20) as response, open(output_raw, "wb") as out_file:
+            out_file.write(response.read())
+        if os.path.exists(output_raw) and os.path.getsize(output_raw) > 10000:
+            print("✅ Đã tải xong video mẫu dự phòng từ GitHub!")
+            return
+    except Exception as e:
+        print(f"⚠️ Tầng 2 lỗi ({e}), kích hoạt Tầng 3 tự tạo video nền bằng FFmpeg...")
+
+    # Tầng 3 (Bất tử): Dùng FFmpeg tự sinh video nền chuyển động tại chỗ
+    gen_cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=1080x1920:rate=30",
+        "-t", "15",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        output_raw
+    ]
+    subprocess.run(gen_cmd, check=True)
+    print("✅ Đã tự khởi tạo video nền dự phòng thành công!")
 
 def remix_movie_anti_copyright(raw_video="raw_movie.mp4", audio_file="movie_voice.mp3", final_video="phim_ngan_tiktok.mp4"):
     print("🎬 Đang xử lý lách bản quyền 5 lớp & ghép thuyết minh...")
@@ -111,7 +143,7 @@ async def main():
     movie_title = os.environ.get("MOVIE_TITLE", "Chủ Tịch Giả Làm Bảo Vệ")
     part_number = os.environ.get("PART_NUMBER", "Phần 1")
     plot_summary = os.environ.get("PLOT_SUMMARY", "Anh chàng mặc đồ bảo vệ đi họp lớp bị bạn cũ sỉ nhục, nào ngờ giám đốc khách sạn chạy ra cúi đầu chào")
-    video_url = os.environ.get("VIDEO_URL", "https://files.catbox.moe/3ce2y5.mp4")
+    video_url = os.environ.get("VIDEO_URL", "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/person-bicycle-car-detection.mp4")
 
     script = generate_movie_recap_script(movie_title, plot_summary, part_number)
     print(f"📝 Lời bình AI vừa viết:\n{script}\n")
