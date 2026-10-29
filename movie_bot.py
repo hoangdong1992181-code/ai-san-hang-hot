@@ -151,20 +151,27 @@ async def create_voiceover(text, output_audio="movie_voice.mp3", output_sub="mov
         file.write(submaker.get_srt())
 
 def remix_movie_anti_copyright(movie_title, part_number, raw_video="raw_movie.mp4", audio_file="movie_voice.mp3", sub_file="movie_sub.srt", final_video="phim_ngan_tiktok.mp4"):
-    with open("banner_title.txt", "w", encoding="utf-8") as f:
-        f.write(movie_title.upper())
-    with open("banner_part.txt", "w", encoding="utf-8") as f:
-        f.write(f"【 {part_number.upper()} 】")
-
+    print("🎬 Đang xử lý lách bản quyền, đóng khung tiêu đề & đốt phụ đề tiếng Việt...")
+    
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    
+    # Làm sạch chuỗi tiêu đề để tránh mọi lỗi ký tự đặc biệt trong FFmpeg
+    clean_title = movie_title.replace(":", " - ").replace("'", "").upper()
+    clean_part = part_number.replace(":", " - ").replace("'", "").upper()
+
+    # Kiểm tra an toàn file phụ đề
+    sub_filter = ""
+    if os.path.exists(sub_file) and os.path.getsize(sub_file) > 10:
+        sub_filter = f",subtitles={sub_file}:force_style='FontName=DejaVu Sans,FontSize=16,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=65'"
+
     filter_complex = (
         "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5,eq=brightness=-0.15[bg];"
         "[0:v]setpts=0.95*PTS,hflip,eq=contrast=1.08:saturation=1.15:brightness=0.02,"
         "scale=1080:1280:force_original_aspect_ratio=decrease[fg];"
         "[bg][fg]overlay=(W-w)/2:(H-h)/2[merged];"
-        f"[merged]drawtext=fontfile={font_path}:textfile=banner_title.txt:fontcolor=#f59e0b:fontsize=46:borderw=4:bordercolor=black:x=(w-text_w)/2:y=140,"
-        f"drawtext=fontfile={font_path}:textfile=banner_part.txt:fontcolor=#ffffff:fontsize=38:borderw=3:bordercolor=black:x=(w-text_w)/2:y=210,"
-        f"subtitles={sub_file}:force_style='FontName=DejaVu Sans,FontSize=16,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=65',"
+        f"[merged]drawtext=fontfile={font_path}:text='{clean_title}':fontcolor=#f59e0b:fontsize=46:borderw=4:bordercolor=black:x=(w-text_w)/2:y=140,"
+        f"drawtext=fontfile={font_path}:text='【 {clean_part} 】':fontcolor=#ffffff:fontsize=38:borderw=3:bordercolor=black:x=(w-text_w)/2:y=210"
+        f"{sub_filter},"
         "fps=30,format=yuv420p[v]"
     )
     cmd = [
@@ -180,6 +187,7 @@ def remix_movie_anti_copyright(movie_title, part_number, raw_video="raw_movie.mp
         final_video
     ]
     subprocess.run(cmd, check=True)
+    print(f"🎉 Xuất xưởng thành công video: {final_video}")
 
 async def main():
     movie_title = os.environ.get("MOVIE_TITLE", "Siêu Phẩm Phim Ngắn")
